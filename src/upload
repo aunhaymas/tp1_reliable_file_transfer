@@ -1,12 +1,60 @@
-#!/usr/bin/env python3
-
-import sys
+#!/bin/python
 import os
+import struct
+from lib.rdt_client import FRDTClient, Role, const
+import time
+from lib.logger import configure_logger, logger, show_stats
 
-sys.pycache_prefix = "/tmp/pycache"
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "lib"))
 
-from command.upload import UploadCommand
+class FRDT_Upload(FRDTClient):
+    def __init__(self):
+        super().__init__("File Reliable Data Transfer")
+        src_help = "source file path"
+        self.parser.add_argument("-s", "--src", required=True, help=src_help)
+
+    def run(self):
+        self.setup()
+        self.rdt_sock.set_role(Role.Sender)
+        configure_logger(verbose=self.args.verbose, quiet=self.args.quiet)
+        if not os.path.exists(self.args.src):
+            logger.error(f"El archivo {self.args.src} no existe.")
+            return
+        size = os.path.getsize(self.args.src)
+        name = self.args.name.encode()
+        payload = struct.pack("!BQ", self.args.protocol, size) + name
+        try:
+            # Handshake
+            sv_response = self.rdt_sock.connect(const.OP_START_UPLOAD, payload)
+            if sv_response.opcode == const.OP_ERROR:
+                logger.error("Error en el servidor")
+                return
+            start_time = time.time()
+            # envio los datos
+            self.show_protocol_info(self.args.protocol)
+
+            logger.info(f"Iniciando carga de archivo {self.args.src}")
+
+            chunk_size = 1024 * 100  # 100kb
+            with open(self.args.src, "rb") as f:
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    self.rdt_sock.send(chunk)
+                self.rdt_sock.close()
+            # estadisticas de tiempo y throughput
+            final_time = time.time() - start_time
+            show_stats(final_time, size)
+
+        except ConnectionError as e:
+            logger.error(f"Error de conexión: {e}")
+            self.rdt_sock.close()
+        except Exception as e:
+            logger.error(f"Error en la subida: {e}")
+            self.rdt_sock.close()
+        finally:
+            self.rdt_sock.close()
+
 
 if __name__ == "__main__":
-    UploadCommand().execute()
+    FRDT_Upload().run()
